@@ -1,0 +1,272 @@
+<meta charset="utf-8">
+<style>
+
+  #under-construction {
+    display: none;
+    position: absolute;
+    top: 200px;
+    left: 300px;
+    font-size: 40px;
+  }
+
+  svg {
+    margin: 1px;
+    border-radius: 1000px;
+    box-shadow: 2px 2px 6px grey;
+    cursor: crosshair;
+  }
+
+  #drawing-area {
+    filter: url("#saturate-around-path");
+  }
+
+  #wave-path {
+    fill: none;
+    stroke: white;
+    stroke-width: 20px;
+  }
+
+  .cell {
+    fill: none;
+    stroke: cyan;
+  }
+</style>
+<body>
+  <div id="under-construction">
+    UNDER CONSTRUCTION
+  </div>
+
+  <svg>
+    <defs>
+      <filter id="saturate-around-path">
+        <feGaussianBlur result="blured" in="SourceAlpha" stdDeviation="10" />
+        <feComposite result="composed" in="SourceGraphic" in2="blured" operator="in"/>
+      </filter>
+    </defs>
+  	<g id="drawing-area">
+      <path id="wave-path"/>
+      <g id="voronoi-container"/>
+    </g>
+  </svg>
+
+  <script src="http://d3js.org/d3.v4.min.js"></script>
+  <script src="simplex-noise.min.js"></script>
+  <script>
+    var _2PI = 2*Math.PI;
+
+    //begin: layout conf.
+    var svgbw = 1, //svg border width
+        svgm = 10, //svg margin
+    		totalWidth = 500,
+        totalHeight = 500,
+        width = totalWidth-(svgm+svgbw)*2,
+        height = totalHeight-(svgm+svgbw)*2,
+        midWidth = width/2,
+        midHeight = height/2;
+    //end: layout conf.
+
+    //begin: Simplex conf.
+    var simplex = new SimplexNoise(),
+    		angleBasedLength = 1, //lower values make more heratic waves' shapes
+    		timeBasedLength = 5000,	//lower values make radiations' shapes evolving faster
+        noiseStrength = midHeight/16;
+    //end: Simplex conf.
+
+    //begin: wave conf.
+    var sampling=3,
+        vertexCount = 360/sampling,		// segments per wave
+        minWaveRadius = midHeight/2 - noiseStrength,
+        maxWaveRadius = 5*midHeight/6 - noiseStrength
+        waveRadius = (minWaveRadius + maxWaveRadius)/2,
+        waveRadiusObjective = waveRadius	//allows to update the base wave's radius
+        wave = [];
+    //end: wave conf.
+
+    //begin: voronoi conf.
+    var maxSpread = 10;
+    //end: voronoi conf.
+
+    var strokeOpacityScale = d3.scaleLinear()
+    	.domain([0, 2*maxSpread])
+    	.range([1, 0]);
+    var voronoiLayout = d3.voronoi()
+          .x(function(d) { return d.x; })
+          .y(function(d) { return d.y; })
+          .extent([[-midWidth, -midHeight], [midWidth, midHeight]]);
+
+    var svg, drawingArea, wavePath, voronoiContainer;
+
+    initLayout();
+    initWave();
+
+    d3.interval(function(elapsed) {
+      updateWave(elapsed);
+      redrawRadialWave();
+      redrawVoronoi();
+    });
+
+
+    function moved() {
+      var coords = d3.mouse(this);
+      var mouseRadius = Math.sqrt(Math.pow(coords[0]-midWidth,2)+Math.pow(coords[1]-midHeight,2));
+      if (mouseRadius<minWaveRadius) {
+        waveRadiusObjective = minWaveRadius;
+      } else if (mouseRadius>maxWaveRadius) {
+        waveRadiusObjective = maxWaveRadius;
+      } else {
+        waveRadiusObjective = mouseRadius;
+      }
+    }
+
+    function exited() {
+      waveRadiusObjective = (minWaveRadius+maxWaveRadius)/2;
+    }
+
+    function initLayout() {
+      svg = d3.select("svg")
+        .attr("width", width)
+        .attr("height", height)
+      	.on("touchmove mousemove", moved)
+      	.on("mouseout", exited);
+
+      drawingArea = d3.select("#drawing-area")
+        .attr("transform", "translate("+[midWidth, midHeight]+")");
+
+      wavePath = d3.select("#wave-path")
+
+      voronoiContainer = d3.select("#voronoi-container")
+    }
+
+    function initWave() {
+      var angle, oppositeAngle, noise, voronoiSpread;
+
+      for (var v=0; v<vertexCount; v++) {
+        angle = _2PI*v/vertexCount;
+        voronoiSpread = maxSpread*Math.abs(d3.randomNormal()())
+        wave[v] = {
+          angle: angle,												// [0, vertexCount] -> [0, 2PI[; discontinuous around 0 rad; will produce noise values discontinued around 0 rad;
+          oppositeAngle : (angle+Math.PI)%_2PI,	// [0, vertexCount] -> [PI, ..., 2PI, 0, ..., PI[; discontinuous around PI; will produce noise values discontinued around PI;
+          continuityCoef: (Math.cos(angle+Math.PI)+1)/2,	// allows to produce a continous noise from 'angle'-based noise and 'oppositeAngle'-based noise; allows to eliminate discontinuities around 0 rad and PI;
+          cos: Math.cos(angle),
+          sin: Math.sin(angle),
+          angleNoise: 0,											// 'angle'-based noise; updated at each frame
+          oppositeAngleNoise: 10,							// 'opppositeAngle'-based noise; updated at each frame
+          noisedRadius: 0,										// vertex's radius; updated at each frame
+          position: [0, 0],										// vertex position; updated at each frame
+          voronoi: {
+            strokeColor: d3.hsl(v*sampling, 1, 0.45),
+            spread: voronoiSpread,
+            strokeOpacity: strokeOpacityScale(voronoiSpread),
+            //spread: maxSpread,
+            firstSeedPosition: [0, 0],				// updated at each frame
+            secondSeedPosition: [0, 0]				// updated at each frame
+          }
+        };
+      }
+    }
+
+    function updateWave(elapsed) {
+      var timeBasedChange = elapsed/timeBasedLength;
+      var vertex;
+
+      //begin: damping wave's base radius towards target radius
+      waveRadius = 0.95*waveRadius + 0.05*waveRadiusObjective;
+      //end: damping wave's base radius towards target radius
+
+
+      //begin: update the wave's data and Voronoi seeds
+      updateVertex(wave[0], timeBasedChange);
+      for (var v=1; v<vertexCount; v++) {
+        updateVertex(wave[v], timeBasedChange);
+        updateVertexSeeds(wave[v], wave[v-1]);
+      }
+      updateVertexSeeds(wave[0], wave[vertexCount-1]);
+      //end: update the wave's data and Voronoi seeds
+    }
+
+    function updateVertex(vertex, timeBasedChange) {
+      //begin: update vertex' radius using Simplex noise
+      vertex.angleNoise = noiseStrength*simplex.noise2D(vertex.angle/angleBasedLength, timeBasedChange);
+        vertex.oppositeAngleNoise = noiseStrength*simplex.noise2D(vertex.oppositeAngle/angleBasedLength, timeBasedChange+10);
+        vertex.noisedRadius = (waveRadius+vertex.continuityCoef*vertex.angleNoise+(1-vertex.continuityCoef)*vertex.oppositeAngleNoise);
+        vertex.position = [
+          vertex.noisedRadius*vertex.cos,
+          vertex.noisedRadius*vertex.sin
+        ];
+      //begin: update vertex' radius using Simplex noise
+    }
+
+    function updateVertexSeeds(vertex, prevVertex) {
+      //begin: update vertex' seeds based on the trend of the segment [vertex, prevVertex]
+      var midX, midY, dx, dy, length, unitDx, unitDy;
+
+      midX = (vertex.position[0]+prevVertex.position[0])/2;
+      midY = (vertex.position[1]+prevVertex.position[1])/2;
+      dx = vertex.position[0]-prevVertex.position[0];
+      dy = vertex.position[1]-prevVertex.position[1];
+      length = Math.sqrt(Math.pow(dx, 2)+Math.pow(dy,2));
+      unitDx = dx/length;
+      unitDy = dy/length;
+      //begin: first seed @ PI/2 from segment's trend
+      vertex.voronoi.firstSeedPosition= [
+        midX+vertex.voronoi.spread*unitDy,
+        midY-vertex.voronoi.spread*unitDx
+      ];
+      //end: first seed @ PI/2 from segment's trend
+      //begin: second seed @ -PI/2 from segment's trend
+      vertex.voronoi.secondSeedPosition= [
+        midX-vertex.voronoi.spread*unitDy,
+        midY+vertex.voronoi.spread*unitDx
+      ];
+      //end: second seed @ -PI/2 from segment's trend
+      //end: update vertex' seeds based on the trend of the segment [vertex, prevVertex]
+    }
+
+    function redrawRadialWave() {
+      //update wave's path
+      var newPath, noisedRadius;
+
+      newPath = "M"+wave[0].position[0]+","+wave[0].position[1];
+      for (var v=1; v<vertexCount; v++) {
+        newPath += "L"+wave[v].position[0]+","+wave[v].position[1];
+      }
+      newPath += "Z";
+      wavePath.attr("d", newPath);
+    }
+
+
+    function redrawVoronoi() {
+      var seeds = [];
+      var vertex;
+
+      //begin: compute Voronoi seeds, close to the wave's path
+      for (var v=0; v<vertexCount; v++) {
+        vertex = wave[v];
+        seeds.push({
+        	x: vertex.voronoi.firstSeedPosition[0],
+          y: vertex.voronoi.firstSeedPosition[1],
+          vertex: wave[v]
+        });
+        seeds.push({
+        	x: vertex.voronoi.secondSeedPosition[0],
+          y: vertex.voronoi.secondSeedPosition[1],
+          vertex: wave[v]
+        });
+      }
+      //end: compute Voronoi seeds, close to the wave's path
+
+      //begin: draw Voronoi cell
+      cells = voronoiLayout.polygons(seeds);
+      var drawnCells = voronoiContainer.selectAll(".cell")
+        .data(cells);
+      drawnCells.enter()
+        .append("path")
+          .classed("cell", true)
+      		.style("stroke-opacity", function(d) { return d.data.vertex.voronoi.strokeOpacity; })
+      	.merge(drawnCells)
+      		.style("stroke", function(d) { return d.data.vertex.voronoi.strokeColor; })
+      		.attr("d", function(d, i) { return d3.line()(d)+'z'; });
+      //end: draw Voronoi cells
+    }
+  </script>
+</body>
